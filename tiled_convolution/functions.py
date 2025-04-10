@@ -3,20 +3,26 @@ from typing import Tuple, Union, Optional, List
 import math
 
 import torch
-
+import numpy as np
+import zarr
+import zarr.storage
+from tqdm.auto import tqdm
 
 def conv2d_tiled(
-    input: torch.Tensor,
+    input: Union[torch.Tensor, np.ndarray, zarr.Array],
     kernel: torch.Tensor,
     size_tile: Tuple[int, int],
     padding: Union[str, int, Tuple[int, int]] = 'same',    
     stride: Tuple[int, int] = (1, 1),
     dilation: Tuple[int, int] = (1, 1),
+    output: Optional[Union[torch.Tensor, np.ndarray, zarr.Array]] = None,
     device_compute: Optional[torch.device] = None,
     device_return: Optional[torch.device] = None,
     dtype_compute: Optional[torch.dtype] = torch.float32,
     dtype_return: Optional[torch.dtype] = None,
-) -> torch.Tensor:
+    kind_return: Optional[str] = None,
+    verbose: bool = False,
+) -> Union[torch.Tensor, np.ndarray, zarr.Array]:
     size_input = (input.shape[-2], input.shape[-1])
     size_kernel = (kernel.shape[-2], kernel.shape[-1])
     
@@ -47,11 +53,47 @@ def conv2d_tiled(
     )
     # print(f'shape_out: {shape_out}')
 
-    out = torch.empty(
-        size=shape_out,
-        dtype=dtype_return,
-        device=device_return,
-    )
+    ## Figure out return object type
+    if output is None:
+        if kind_return is not None:
+            assert kind_return in ['zarr', 'numpy', 'torch'], "kind_return must be one of ['zarr', 'numpy', 'torch']"
+            if kind_return == 'zarr':
+                output = zarr.create_array(
+                    store=zarr.storage.MemoryStore(),
+                    shape=shape_out,
+                    dtype=torch_dtype_to_numpy_dtype(dtype_return),
+                    chunks=size_tile,
+                    overwrite=True,
+                    order='C',
+                )
+            elif kind_return == 'numpy':
+                output = np.empty(
+                    shape=shape_out,
+                    dtype=torch_dtype_to_numpy_dtype(dtype_return),
+                )
+            elif kind_return == 'torch':
+                output = torch.empty(
+                    size=shape_out,
+                    dtype=dtype_return,
+                    device=device_return,
+                )
+        else:
+            output = torch.empty(
+                size=shape_out,
+                dtype=dtype_return,
+                device=device_return,
+            )
+
+    if isinstance(output, zarr.Array):
+        kind_return = 'zarr'
+    elif isinstance(output, np.ndarray):
+        kind_return = 'numpy'
+    elif isinstance(output, torch.Tensor):
+        kind_return = 'torch'
+    else:
+        raise ValueError("Output must be a zarr.Array, numpy.ndarray, or torch.Tensor")
+
+    assert output.shape == shape_out, f"Output shape {output.shape} does not match expected shape {shape_out}"
 
     ## Move the kernel to the correct device
     kernel = kernel.type(dtype_compute).to(device_compute)
@@ -68,7 +110,7 @@ def conv2d_tiled(
             idx_tiles_out.append((idx_out_top, idx_out_bottom, idx_out_left, idx_out_right))
 
     ## loop over the tiles
-    for i_tile, (idx_out_top, idx_out_bottom, idx_out_left, idx_out_right) in enumerate(idx_tiles_out):
+    for i_tile, (idx_out_top, idx_out_bottom, idx_out_left, idx_out_right) in tqdm(enumerate(idx_tiles_out), total=len(idx_tiles_out), desc="Processing tiles", disable=not verbose):
         # print(f"Tile: {i_tile} / {len(idx_tiles)}")
         # print(f"idx_out: {idx_out_top, idx_out_bottom, idx_out_left, idx_out_right}")
 
@@ -94,7 +136,7 @@ def conv2d_tiled(
         # print(f"idx_in_clip: {idx_in_top_clip, idx_in_bottom_clip, idx_in_left_clip, idx_in_right_clip}")
 
         ## get the tile
-        tile_in = input[idx_in_top_clip:idx_in_bottom_clip + 1, idx_in_left_clip:idx_in_right_clip + 1]
+        tile_in = torch.as_tensor(input[idx_in_top_clip:idx_in_bottom_clip + 1, idx_in_left_clip:idx_in_right_clip + 1])
         # print(f'tile in shape: {tile.shape}')
         
         # get the padding for the tile
@@ -128,9 +170,16 @@ def conv2d_tiled(
         # print(f'target shape: {out[slice(idx_out_top, idx_out_bottom + 1), slice(idx_out_left, idx_out_right + 1)].shape}')
 
         # assign the output to the correct location
-        out[slice(idx_out_top, idx_out_bottom + 1), slice(idx_out_left, idx_out_right + 1)] = out_custom[0, 0, :, :].type(dtype_return).to(device_return)
+        out_custom = out_custom[0, 0, :, :].type(dtype_return).to(device_return)
+        
+        if kind_return in ['numpy', 'zarr']:
+            out_custom = out_custom.cpu().numpy()
+        elif kind_return == 'torch':
+            out_custom = out_custom.to(device_return)
+
+        output[slice(idx_out_top, idx_out_bottom + 1), slice(idx_out_left, idx_out_right + 1)] = out_custom
     
-    return out
+    return output
         
 
 #######################################################################################################
@@ -407,3 +456,6 @@ def compute_padding_amount(
         pad_left,
         pad_right
     )
+
+def torch_dtype_to_numpy_dtype(dtype):
+    return torch.empty(size=(0,), dtype=dtype).numpy().dtype
