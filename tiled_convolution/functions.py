@@ -96,7 +96,7 @@ def conv2d_tiled(
     assert output.shape == shape_out, f"Output shape {output.shape} does not match expected shape {shape_out}"
 
     ## Move the kernel to the correct device
-    kernel = kernel.type(dtype_compute).to(device_compute)
+    kernel = torch.as_tensor(kernel).type(dtype_compute).to(device_compute)
 
     ## Make tiles_out indices
     # idx_tiles_out = [(ii, min(ii+size_tile[0], shape_out[0])-1, jj, min(jj+size_tile[1], shape_out[1])-1) for ii in range(0, shape_out[0], size_tile[0]) for jj in range(0, shape_out[1], size_tile[1])]

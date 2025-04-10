@@ -5,6 +5,10 @@ Uses a tiled approach to break the convolution into batches, which reduces maxim
 ## Installation
 from source
 ```bash
+pip install https://github.com/RichieHakim/tiled_convolution.git
+```
+or
+```bash
 git clone https://github.com/RichieHakim/tiled_convolution
 cd tiled_convolution
 pip install -e .
