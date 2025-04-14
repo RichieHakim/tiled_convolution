@@ -23,6 +23,9 @@ def conv2d_tiled(
     kind_return: Optional[str] = None,
     verbose: bool = False,
 ) -> Union[torch.Tensor, np.ndarray, zarr.Array]:
+    ndim_input = input.ndim
+    if ndim_input == 2:
+        input = input[None, :, :]
     size_input = (input.shape[-2], input.shape[-1])
     size_kernel = (kernel.shape[-2], kernel.shape[-1])
     
@@ -51,6 +54,7 @@ def conv2d_tiled(
         stride=stride,
         dilation=dilation,
     )
+    shape_out = (input.shape[0],) + shape_out
     # print(f'shape_out: {shape_out}')
 
     ## Figure out return object type
@@ -101,12 +105,12 @@ def conv2d_tiled(
     ## Make tiles_out indices
     # idx_tiles_out = [(ii, min(ii+size_tile[0], shape_out[0])-1, jj, min(jj+size_tile[1], shape_out[1])-1) for ii in range(0, shape_out[0], size_tile[0]) for jj in range(0, shape_out[1], size_tile[1])]
     idx_tiles_out: List[Tuple[int, int, int, int]] = []
-    for ii in range(0, shape_out[0], size_tile[0]):
-        for jj in range(0, shape_out[1], size_tile[1]):
+    for ii in range(0, shape_out[-2], size_tile[0]):
+        for jj in range(0, shape_out[-1], size_tile[1]):
             idx_out_top = int(ii)
-            idx_out_bottom = int(min(ii + size_tile[0], shape_out[0]) - 1)
+            idx_out_bottom = int(min(ii + size_tile[0], shape_out[-2]) - 1)
             idx_out_left = int(jj)
-            idx_out_right = int(min(jj + size_tile[1], shape_out[1]) - 1)
+            idx_out_right = int(min(jj + size_tile[1], shape_out[-1]) - 1)
             idx_tiles_out.append((idx_out_top, idx_out_bottom, idx_out_left, idx_out_right))
 
     ## loop over the tiles
@@ -136,7 +140,7 @@ def conv2d_tiled(
         # print(f"idx_in_clip: {idx_in_top_clip, idx_in_bottom_clip, idx_in_left_clip, idx_in_right_clip}")
 
         ## get the tile
-        tile_in = torch.as_tensor(input[idx_in_top_clip:idx_in_bottom_clip + 1, idx_in_left_clip:idx_in_right_clip + 1])
+        tile_in = torch.as_tensor(input[..., idx_in_top_clip:idx_in_bottom_clip + 1, idx_in_left_clip:idx_in_right_clip + 1])
         # print(f'tile in shape: {tile.shape}')
         
         # get the padding for the tile
@@ -151,15 +155,15 @@ def conv2d_tiled(
             tile=tile_in,
             padding=padding_for_tile,
         )
-        # print(f'tile padded shape: {tile_padded.shape}')
+        # print(f'tile padded shape: {tile_in_padded.shape}')
 
         ## move the tile to the correct device
         tile_in_padded = tile_in_padded.type(dtype_compute).to(device_compute)
-        # print(f'tile padded device: {tile_padded.device}, dtype: {tile_padded.dtype}')
+        # print(f'tile padded device: {tile_in_padded.device}, dtype: {tile_in_padded.dtype}')
 
         ## compute the output for the tile
         out_custom = torch.nn.functional.conv2d(
-            input=tile_in_padded[None, None, :, :],
+            input=tile_in_padded[:, None, :, :],
             weight=kernel[None, None, :, :],
             stride=stride,
             padding='valid',
@@ -167,17 +171,21 @@ def conv2d_tiled(
         )
         # print(f'out_custom shape: {out_custom.shape}')
         # print(f'target indices: {slice(idx_out_top, idx_out_bottom + 1)}, {slice(idx_out_left, idx_out_right + 1)}')
-        # print(f'target shape: {out[slice(idx_out_top, idx_out_bottom + 1), slice(idx_out_left, idx_out_right + 1)].shape}')
+        # print(f'target shape: {out_custom[slice(idx_out_top, idx_out_bottom + 1), slice(idx_out_left, idx_out_right + 1)].shape}')
 
         # assign the output to the correct location
-        out_custom = out_custom[0, 0, :, :].type(dtype_return).to(device_return)
+        out_custom = out_custom.type(dtype_return).to(device_return)
+        if ndim_input == 2:
+            out_custom = out_custom[0, 0, :, :]
+        elif ndim_input == 3:
+            out_custom = out_custom[:, 0, :, :]
         
         if kind_return in ['numpy', 'zarr']:
             out_custom = out_custom.cpu().numpy()
         elif kind_return == 'torch':
             out_custom = out_custom.to(device_return)
 
-        output[slice(idx_out_top, idx_out_bottom + 1), slice(idx_out_left, idx_out_right + 1)] = out_custom
+        output[:, slice(idx_out_top, idx_out_bottom + 1), slice(idx_out_left, idx_out_right + 1)] = out_custom
     
     return output
         
